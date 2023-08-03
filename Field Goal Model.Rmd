@@ -1,0 +1,266 @@
+---
+title: "Field Goal Model"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**Step 1: Expected (Field) Goals**
+
+```{r}
+install.packages('RCurl')
+```
+
+```{r}
+#loading required libraries
+library(tidyverse)
+library(RCurl)
+library(ggplot2)
+```
+
+```{r}
+# Loading the Data
+url <- getURL("https://raw.githubusercontent.com/statsbylopez/StatsSports/master/Data/nfl_fg.csv")
+nfl.kick <- read.csv(text = url)
+head(nfl.kick)
+```
+
+```{r eval=FALSE}
+#characterisitics of the data - columns
+names(nfl.kick)
+```
+
+```{r}
+#summary stats for variables in data
+summary(nfl.kick)
+```
+
+```{r eval=FALSE}
+#visualization of variables
+ggplot(data = nfl.kick, aes(GameMinute), ) + 
+         geom_histogram()
+ggplot(data = nfl.kick, aes(ScoreDiff)) + 
+         geom_histogram()
+ggplot(data = nfl.kick, aes(Distance)) + 
+         geom_histogram()
+```
+
+The summary statistics above and the visualizations help understand how the variable is distributed in the data, and help select 
+the characteristics for our model. 
+
+The distance variable is uniformly distributed till about 48 yards, and then we see a right tail implying that further that the number of 
+kicks reduce after that point as the number of kicks drastically reduce.
+
+The Game Minute variable is rather uniformly distributed, with a clear mode just before the second half. The data also looks symmetric. 
+For the purposes of this model, we will change the variable to 'GameQuarter' through grouping of time intervals by 15 minutes.  
+```{r}
+nfl.kick <- nfl.kick %>%
+  mutate(GameQuarter = if_else(GameMinute<=15, 1, if_else(GameMinute<=30, 2, if_else(GameMinute<=45, 3, 4))))
+```
+
+For the ScoreDiff variable, it has a bell shaped distribution and is symmetric with a close mean and median. This variable is transformed
+into another variable for Win, Loss or Draw depending on the difference in the score at that point. 
+```{r}
+nfl.kick <- nfl.kick %>%
+  mutate(WLD = if_else(ScoreDiff==0, 0, if_else(ScoreDiff<0, -1, 1)))
+```
+
+```{r}
+#summary stats for new variables
+summary(nfl.kick$GameQuarter)
+summary(nfl.kick$WLD)
+```
+The variables we select are - the distance from which a shot is taken, what game situation the team was in, 
+the quarter the game was being played in and whether it was played on Grass or Turf
+
+The logistic regression model is below:
+
+$$  \log(\dfrac{P(success=1)}{1-P(success=1)}) = \beta_0+\beta_1*Distance +\beta_2*WLD +\beta_3*GameQuarter +\beta_4*Grass  + e $$
+Success is defined as whether a kick was 'made', whether it was a goal or not. 
+
+```{r}
+#fitting the model using logistic regression
+fit.1 <- glm(Success ~ Distance + WLD + GameQuarter + Grass, data = nfl.kick, family = "binomial")
+summary(fit.1)
+```
+The following model is produced:
+$$  \log(\dfrac{P(success=1)}{1-P(success=1)}) = 5.78 -0.103*Distance -0.012*WLD +0.017*GameQuarter -0.168*Grass  + e $$
+From the coefficients, we can understand the effect of a variable of the log-odds of a goal. 
+All variables except GameQuarter seem to negatively affect the probability of a goal as they increase. 
+This makes sense, as it is difficult to take a kick from further out, it can be argued that a losing 
+position is positively associated with a kick, and lastly, playing on grass seems to negatively affect 
+the probability.
+
+```{r}
+exp(fit.1$coeff)
+exp(confint(fit.1))
+```
+Since the model is expressed in log-odds, we exponentiate the coefficients to better understand the model. 
+
+$$  \frac{P(success=1)}{1-P(success=1)} = 325.26 +0.9*Distance +0.99*WLD +1.02*GameQuarter +0.85*Grass  + e $$
+A one-unit increase in the explanatory variables will multiple the odds ratio by the exponential value of the coefficients. Therefore, as WLD and 
+Game Quarter are not statistically significant results, and their coefficients are close 1, we can say that a losing position and as the game goes on, a kick is 
+slightly more likely to go in, on average. On the other hand, a one-unit increase in distance will reduce the odds ratio by 0.9*(probability of sucess)*(probabilty of failure),
+where the probability is estimated for the data point in question. Similarly, Grass has a negative effect in the odds ratio as well. 
+
+```{r}
+nfl.kick <- nfl.kick %>% 
+  mutate(expectedmakes1 = fitted(fit.1))
+nfl.kick <- nfl.kick %>% 
+  mutate(extramakes1 = Success-expectedmakes1)
+```
+```{r}
+ggplot(nfl.kick, aes(expectedmakes1)) + 
+  geom_histogram()
+ggplot(nfl.kick, aes(extramakes1)) + 
+  geom_histogram()
+```
+
+```{r}
+ggplot(nfl.kick,aes(Distance, expectedmakes1 ,color=Grass)) + geom_point()
+ggplot(nfl.kick,aes(Distance, expectedmakes1 ,color=WLD)) + geom_point()
+ggplot(nfl.kick,aes(GameQuarter, expectedmakes1)) + geom_point()
+```
+
+**Step 2: Points above average**
+
+```{r}
+summary(nfl.kick$expectedmakes1)
+```
+```{r}
+#adding a variable to show that a shot was above average
+kick <- nfl.kick %>%
+  select(Kicker, expectedmakes1, Success, Distance) %>%
+  mutate(above_average = if_else(expectedmakes1>mean(expectedmakes1), 1, 0))
+```
+
+```{r}
+ggplot(kick,aes(above_average)) + geom_histogram()
+```
+
+```{r}
+linearDist <- lm(above_average ~ Distance, data = kick)
+summary(linearDist)
+kick <- kick %>% 
+  mutate(LinearPrediction = fitted(linearDist))
+```
+
+```{r}
+ggplot() + geom_point(data=kick,aes(x=Distance, y=above_average),color="blue") + geom_point(data=kick,aes(x=Distance, y=LinearPrediction),color="red") + scale_y_continuous(limits=c(-0.4, 1.1))
+```
+
+
+**Step 3: Top 5’s**
+
+```{r}
+Kicker1 <- kick %>%
+    group_by(Kicker) %>%
+    summarize(total=sum(above_average),numkicks=n(),pointsperkick=total/numkicks)
+head(Kicker1)
+```
+
+```{r}
+ggplot(Kicker1,aes(total)) + geom_histogram()
+ggplot(Kicker1,aes(pointsperkick)) + geom_histogram()
+```
+
+The first distribution does not have any clear shape, but a few clear outliers are seen. The second distribution
+shows that the model always predicted an above average shot for a player and never predicted the same for a few. 
+The rest of the distribution looks rather symmetric around 0.62 and ranges from 0.36 to 0.88. The most amount of 
+values are centred around the data. 
+
+```{r}
+Kicker2 <- Kicker1 %>% arrange(desc(total))
+Kicker3 <- Kicker1 %>% arrange(desc(pointsperkick))
+head(Kicker2, 5)
+head(Kicker3, 5)
+```
+
+```{r}
+#add a variable to assess whether a shot is a long or not (45 yards+)
+kick <- nfl.kick %>%
+  select(Kicker, expectedmakes1, Success, Distance) %>%
+  mutate(longshot=if_else(Distance>45, 1, 0)) %>%
+  mutate(above_average = if_else(expectedmakes1>mean(expectedmakes1), 1, 0))
+
+#fliter for only longshots
+Kicker4 <- kick %>%
+    select(longshot, Kicker, expectedmakes1, Success, above_average) %>%
+    filter(longshot==1) %>%
+    group_by(Kicker) %>%
+    summarize(total=sum(above_average),numkicks=n(),pointspergame=total/numkicks)
+Kicker4 %>% arrange(desc(total))
+Kicker5 <- Kicker4 %>% arrange(desc(pointspergame))
+head(Kicker4, 5)
+head(Kicker5, 5)
+```
+
+Looking at 35 yard+ kicks:
+```{r}
+kick <- nfl.kick %>%
+  select(Kicker, expectedmakes1, Success, Distance) %>%
+  mutate(longshot=if_else(Distance>35, 1, 0)) %>%
+  mutate(above_average = if_else(expectedmakes1>mean(expectedmakes1), 1, 0))
+
+#looking at player stats
+Kicker6 <- kick %>%
+    select(longshot, Kicker, expectedmakes1, Success, above_average) %>%
+    filter(longshot==1) %>%
+    group_by(Kicker) %>%
+    summarize(total=sum(above_average),numkicks=n(),pointspergame=total/numkicks)
+Kicker7 <- Kicker6 %>% arrange(desc(total))
+Kicker8 <- Kicker6 %>% arrange(desc(pointspergame))
+head(Kicker7, 5)
+head(Kicker8, 6)
+```
+
+**Step 4: Measuring Kicker Effectiveness**
+
+```{r}
+kick <- nfl.kick %>%
+  select(Kicker, expectedmakes1, Success, Distance) %>%
+  mutate(above_average = if_else(expectedmakes1>mean(expectedmakes1), 1, 0))
+head(kick)
+```
+```{r}
+Kicker1 <- kick %>%
+    group_by(Kicker, Distance) %>%
+    summarize(total=sum(above_average),numkicks=n(),pointsperkick=total/numkicks)
+head(Kicker1)
+```
+```{r}
+#filtering out for only the top 5 kickers based on total above average shots
+Kicker1 <- Kicker1 %>% 
+  filter(Kicker == "Akers" | Kicker== "Brown" | Kicker == "Gostkowski" |Kicker == 
+           "Vinatieri" | Kicker == "Dawson")
+```
+
+```{r}
+Akers <- Kicker1 %>% 
+  filter(Kicker == "Akers")
+```
+
+```{r}
+ggplot() + geom_point(data=Kicker1,aes(x=Distance, y=pointsperkick),color="blue") 
+ggplot() + geom_point(data=Kicker1,aes(x=Distance, y=total),color="blue") 
+```
+We can see that, from both distributions that till around the 40 yard mark, the model always predicts an above 
+average kick, however it starts falling after every yard, after that mark. 
+
+```{r}
+linearDist <- lm(pointsperkick ~ Distance, data = Akers)
+summary(linearDist)
+Akers <- Akers %>% 
+  mutate(LinearPrediction = fitted(linearDist))
+linearDista <- lm(total ~ Distance, data = Akers)
+summary(linearDista)
+Akers <- Akers %>% 
+  mutate(LinearPredictiona = fitted(linearDista))
+ggplot() + geom_point(data=Akers,aes(x=Distance, y=pointsperkick),color="blue") + geom_point(data=Akers,aes(x=Distance, y=LinearPrediction),color="red")
+ggplot() + geom_point(data=Akers,aes(x=Distance, y=total),color="blue") + geom_point(data=Akers,aes(x=Distance, y=LinearPredictiona),color="red")
+```
+Similar visulations are seen with only Akers' kicks. 
